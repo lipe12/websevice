@@ -1,5 +1,17 @@
 /*
 * 功能： 将多个栅格数据进行叠加求得公共部分，输出公共部分，并输出公共部分的外边界矢量SHP文件
+* 说明：
+* 输入参数：4个
+*	第1个：输入的栅格数据文件名，用'#'分割；
+*	第2个：输出的栅格数据文件名，用'#'分割；
+*	第3个：输出的临时栅格数据文件名，该临时文件最终会自动被删除；
+*	第4个：输出的外边界SHP数据文件名。
+*
+* 函数返回值：
+*	返回 0：  表示程序正确运行
+*	返回 444：表示文件读取错误（输入或输出的文件名有误等情况）
+*	返回 999：表示输入的参数格式不正确
+*	其他：    表示存在图层之间没有交集的情况，返回值为与之前图层没有交集的图层序号（例如：第三个输入图层与前两个图层无交集，则输出第三个图层的序号:2）
 */
 
 #include <stdio.h>
@@ -9,7 +21,7 @@
 #include "gdal_priv.h"
 #include "ogrsf_frmts.h" //for ogr
 #include "gdal_alg.h"	 //for GDALPolygonize
-#include "cpl_conv.h"	 //for CPLMalloc() 
+#include "cpl_conv.h"	 //for CPLMalloc()
 
 using namespace std;
 
@@ -48,7 +60,7 @@ bool Projection2ImageRowCol(double *adfGeoTransform, double dProjX, double dProj
 }
 
 // DEM数据公共部分裁剪
-bool DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileNames)
+int DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileNames)
 {
 	GDALAllRegister();
 
@@ -64,8 +76,7 @@ bool DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileN
 		}
 		else
 		{
-			cout<<"文件读取错误！\n";
-			return 0;
+			return 444;		// 文件读取有误，返回444
 		}
 	}
 
@@ -100,6 +111,14 @@ bool DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileN
 			double top_temp = geoTransform[3];
 			double right_temp = geoTransform[0] + geoTransform[1] * ds->GetRasterXSize() + geoTransform[2] * ds->GetRasterYSize();
 			double bottom_temp = geoTransform[3] + geoTransform[4] * ds->GetRasterXSize() + geoTransform[5] * ds->GetRasterYSize();
+
+			// 判断是否有交集
+			if(left_temp >= right || top_temp <= bottom || right_temp <= left || bottom_temp >= top)
+			{
+				return i;	// 结束该函数，第i个图层与之前的图层没有交集
+			}
+
+			// 有交集，继续执行
 			if(left_temp > left)	// 取left最大值
 			{
 				left = left_temp;
@@ -120,6 +139,52 @@ bool DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileN
 	}
 
 	// 根据边界获取每个栅格文件需要裁剪出的行列范围，并输出裁剪后的栅格数据
+	vector<float*> pDataList;
+	int pixelCount = 0;
+	float noDataValue = datasets[0]->GetRasterBand(1)->GetNoDataValue();
+	for(int i = 0; i < datasets.size(); i++)
+	{
+		GDALDataset *ds;
+		ds = datasets[i];
+		double geoTransform[6];
+		ds->GetGeoTransform(geoTransform);
+		int row_start, col_start, row_end, col_end, rowCount, colCount;
+		Projection2ImageRowCol(geoTransform, left, top, col_start, row_start);	// 根据地理坐标转换得到起点左上角的行列号
+		Projection2ImageRowCol(geoTransform, right, bottom, col_end, row_end);	// 根据地理坐标转换得到终点右下角的行列号
+		rowCount = row_end - row_start;// + 1;
+		colCount = col_end - col_start;// + 1;
+		pixelCount = colCount*rowCount;
+
+		// 读取数据
+		float *pData = (float*)CPLMalloc(sizeof(float)*colCount*rowCount);
+		GDALDataType dataType = ds->GetRasterBand(1)->GetRasterDataType();
+		ds->RasterIO(GF_Read, col_start, row_start, colCount, rowCount, pData, colCount, rowCount, GDT_Float32, 1, 0, 0, 0, 0);
+
+		pDataList.push_back(pData);
+	}
+	float *pBoundaryData = (float*)CPLMalloc(sizeof(float)*pixelCount);
+	for(int i = 0; i < pixelCount; i++)
+	{
+		bool flag = true;
+		for(int j = 0; j < pDataList.size(); j++)
+		{
+			float value = pDataList[j][i];
+			if(value == noDataValue)
+			{
+				flag = false;
+				break;
+			}
+		}
+		if(flag == true)	// 有数据
+		{
+			pBoundaryData[i] = 1;
+		}
+		else	// 没有数据,此栅格值为noDataValue
+		{
+			pBoundaryData[i] = 0;
+		}
+	}
+	
 	for(int i = 0; i < datasets.size(); i++)
 	{
 		GDALDataset *ds;
@@ -132,11 +197,6 @@ bool DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileN
 		rowCount = row_end - row_start;// + 1;
 		colCount = col_end - col_start;// + 1;
 
-		// 读取数据
-		float *pData = (float*)CPLMalloc(sizeof(float)*colCount*rowCount);
-		GDALDataType dataType = ds->GetRasterBand(1)->GetRasterDataType();
-		ds->RasterIO(GF_Read, col_start, row_start, colCount, rowCount, pData, colCount, rowCount, GDT_Float32, 1, 0, 0, 0, 0);
-
 		// 创建输出数据
 		GDALDataset *output;
 		GDALDriver  *pDriver;
@@ -144,14 +204,23 @@ bool DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileN
 		if(pDriver == NULL)
 		{
 			cout<<"GDAL DriverManager Error!\n";
-			return false;
+			return 444;
 		}
 		output = pDriver->Create(outputRasterFileNames[i].c_str(), colCount, rowCount, 1, GDT_Float32, NULL);
 		if(output == NULL)
 		{
 			cout<<"GDAL Create Error!\n";
-			return false;
+			return 444;
 		}
+
+		for(int j = 0; j < pixelCount; j++)
+		{
+			if(pBoundaryData[j] == 0)
+			{
+				pDataList.at(i)[j] = noDataValue;
+			}
+		}
+
 		double newGeotransform[6];
 		newGeotransform[0] = left;
 		newGeotransform[1] = geoTransform[1];
@@ -160,18 +229,18 @@ bool DEMCut(vector<string> inputRasterFileNames,vector<string> outputRasterFileN
 		newGeotransform[4] = geoTransform[4];
 		newGeotransform[5] = geoTransform[5];
 		output->SetGeoTransform(newGeotransform);
-		output->GetRasterBand(1)->RasterIO(GF_Write, 0, 0, colCount, rowCount, pData, colCount, rowCount, GDT_Float32, 0, 0);
+		output->GetRasterBand(1)->RasterIO(GF_Write, 0, 0, colCount, rowCount, pDataList.at(i), colCount, rowCount, GDT_Float32, 0, 0);
 		output->SetProjection(ds->GetProjectionRef());
 		output->GetRasterBand(1)->SetNoDataValue(ds->GetRasterBand(1)->GetNoDataValue());
 
 		GDALClose((GDALDatasetH)ds);		// 关闭数据集
 		GDALClose((GDALDatasetH)output);	// 关闭数据集
 	}
-	return true;
+	return 0;
 }
 
 // 构造外轮廓的栅格文件
-bool CreateBoundaryRaster(vector<string> inputRasterFileNames, char *outputFileName)
+int CreateBoundaryRaster(vector<string> inputRasterFileNames, char *outputFileName)
 {
 	// 读入数据
 	vector<GDALDataset *> datasets;
@@ -186,7 +255,7 @@ bool CreateBoundaryRaster(vector<string> inputRasterFileNames, char *outputFileN
 		else
 		{
 			cout<<"文件读取错误！\n";
-			return 0;
+			return 444;
 		}
 	}
 	int colCount = datasets[0]->GetRasterXSize();
@@ -197,13 +266,13 @@ bool CreateBoundaryRaster(vector<string> inputRasterFileNames, char *outputFileN
 	if(pDriver == NULL)
 	{
 		cout<<"GDAL DriverManager Error!\n";
-		return false;
+		return 444;
 	}
 	output = pDriver->Create(outputFileName, colCount, rowCount, 1, GDT_Float32, NULL);
 	if(output == NULL)
 	{
 		cout<<"GDAL Create Error!\n";
-		return false;
+		return 444;
 	}
 	
 	float *pFinalData = (float*)CPLMalloc(sizeof(float)*colCount*rowCount);	// 存放最终输出栅格的数据
@@ -220,13 +289,13 @@ bool CreateBoundaryRaster(vector<string> inputRasterFileNames, char *outputFileN
 	float noDataValue = datasets[0]->GetRasterBand(1)->GetNoDataValue();
 	for(int i = 0; i < colCount*rowCount; i++)
 	{
-		bool flag = false;	// 判断是否有数据
+		bool flag = true;	// 判断是否有数据
 		for(int j = 0; j < pDataList.size(); j++)
 		{
 			float value = pDataList[j][i];
-			if(value != noDataValue)
+			if(value == noDataValue)
 			{
-				flag = true;
+				flag = false;
 				break;
 			}
 		}
@@ -255,10 +324,11 @@ bool CreateBoundaryRaster(vector<string> inputRasterFileNames, char *outputFileN
 	}
 	
 	GDALClose((GDALDatasetH)output);	// 关闭数据集
+	return 0;
 }
 
 // 将外轮廓栅格文件矢量化
-bool ImagePolygonize(char *inputFileName, char* outputFileName, const char* pszFormat)
+int ImagePolygonize(char *inputFileName, char* outputFileName, const char* pszFormat)
 {
 	GDALAllRegister();
 	OGRRegisterAll();	// 添加驱动注册
@@ -267,33 +337,34 @@ bool ImagePolygonize(char *inputFileName, char* outputFileName, const char* pszF
 	GDALDataset* poSrcDS=(GDALDataset*)GDALOpen(inputFileName, GA_ReadOnly);
 	if(poSrcDS==NULL)
 	{
-		return false;
+		return 444;
 	}
 	// 创建输出矢量文件
 	OGRSFDriver *poDriver;
-	poDriver = OGRSFDriverRegistrar::GetRegistrar()->GetDriverByName( pszFormat );
+	poDriver = (OGRSFDriver*)OGRSFDriverRegistrar::GetRegistrar()->GetDriverByName( pszFormat );
 	if (poDriver == NULL)
 	{  
 		GDALClose((GDALDatasetH)poSrcDS); 
-		return false;
+		return 444;
 	}
+	poDriver->DeleteDataSource(outputFileName);	// 若该文件存在，则先删除已有的shp文件
 	//根据文件名创建输出矢量文件
-	OGRDataSource* poDstDS=poDriver->CreateDataSource(outputFileName);
+	OGRDataSource* poDstDS = poDriver->CreateDataSource(outputFileName, NULL);
 	if (poDstDS==NULL)
 	{
 		GDALClose((GDALDatasetH)poSrcDS);
-		return false;
+		return 444;
 	}
 	// 定义空间参考，与输入图像相同;
 	OGRSpatialReference *poSpatialRef = new OGRSpatialReference(poSrcDS->GetProjectionRef());
 	OGRLayer* poLayer = poDstDS->CreateLayer("boundary", poSpatialRef, wkbPolygon, NULL);
-	if (poDstDS == NULL) 
+	if (poDstDS == NULL)
 	{
 		GDALClose((GDALDatasetH)poSrcDS); 
 		OGRDataSource::DestroyDataSource(poDstDS); 
 		delete poSpatialRef; 
 		poSpatialRef = NULL; 
-		return false;
+		return 444;
 	}
 	OGRFieldDefn ofieldDef("Segment", OFTInteger);	//创建属性表，只有一个字段即“Segment”，里面保存对应的栅格的像元值
 	poLayer->CreateField(&ofieldDef);
@@ -313,13 +384,13 @@ bool ImagePolygonize(char *inputFileName, char* outputFileName, const char* pszF
 		}
 	}
 	OGRFeatureDefn *pFeatureDefn = poLayer->GetLayerDefn();
-	std::string strLayerName = pFeatureDefn->GetName();		//读取该图层的名称
+	std::string strLayerName = pFeatureDefn->GetName();		// 读取该图层的名称
 	std::string strSQL = "REPACK " + strLayerName;
 	poDstDS->ExecuteSQL(strSQL.c_str(), NULL, "");
 	
-	GDALClose(poSrcDS); //关闭文件
+	GDALClose(poSrcDS); // 关闭文件
 	OGRDataSource::DestroyDataSource(poDstDS);
-	return 1;
+	return 0;
 }
 
 // 删除临时文件
@@ -329,13 +400,18 @@ void DeleteTempFile(char *filename)
 }
 
 // 主要的处理函数
-void DEMProcessing(vector<string> inputRasterFileNames, vector<string> outputRasterFileNames,
+int DEMProcessing(vector<string> inputRasterFileNames, vector<string> outputRasterFileNames,
 				   char *tempRasterFileName, char *shpFileName)
 {
-	DEMCut(inputRasterFileNames, outputRasterFileNames);					// DEM数据公共部分裁剪
+	int result = DEMCut(inputRasterFileNames, outputRasterFileNames);		// DEM数据公共部分裁剪
+	if(result != 0)
+	{
+		return result;		// 结束操作，存在图层之间没有交集的情况，返回图层序号
+	}
 	CreateBoundaryRaster(outputRasterFileNames, tempRasterFileName);		// 构造外轮廓的栅格文件
 	ImagePolygonize(tempRasterFileName, shpFileName, "ESRI Shapefile");		// 将外轮廓栅格文件矢量化
 	DeleteTempFile(tempRasterFileName);										// 删除临时文件
+	return 0;
 }
 
 
@@ -343,17 +419,19 @@ int main(int argc, char *argv[])
 {
 	// ******************* 数据准备--载入测试数据 ******************* //
 
-	// 实例
-	//argv[1] = "D:/data/demcut/twi.tif#D:/data/demcut/slope.tif#D:/data/demcut/plan.tif";
-	//argv[2] = "D:/RasterCut/output/twi.tif#D:/RasterCut/output/slope.tif#D:/RasterCut/output/plan.tif";
+	// 参数示例
+	//argc = 5;
+	//argv[1] = "D:/data/demcut/dem1.tif#D:/data/demcut/dem2.tif";
+	//argv[2] = "D:/RasterCut/output/dem1.tif#D:/RasterCut/output/dem2.tif";
 	//argv[3] = "D:/RasterCut/output/tempRaster.tif";
 	//argv[4] = "D:/RasterCut/output/boundary.shp";
-	//char *argument = "D:/data/demcut/twi.tif#D:/data/demcut/slope.tif#D:/data/demcut/plan.tif D:/RasterCut/output/twi.tif#D:/RasterCut/output/slope.tif#D:/RasterCut/output/plan.tif D:/RasterCut/output/tempRaster.tif D:/RasterCut/output/boundary.shp";
+	//char *argument = "D:/data/demcut/twi.tif#D:/data/demcut/slope.tif#D:/data/demcut/plan.tif#D:/data/demcut/Elevation.asc D:/RasterCut/output/twi.tif#D:/RasterCut/output/slope.tif#D:/RasterCut/output/plan.tif#D:/RasterCut/output/Elevation.tif D:/RasterCut/output/tempRaster.tif D:/RasterCut/output/boundary.shp";
+	//char *argument = "D:/data/demcut/dem1.tif#D:/data/demcut/dem2.tif D:/RasterCut/output/dem1.tif#D:/RasterCut/output/dem2.tif D:/RasterCut/output/tempRaster.tif D:/RasterCut/output/boundary.shp";
 
 	if(argc-1 != 4) // 判断输入参数个数是否为4
 	{
-		cout<<"输入参数有误！\n";
-		return 0;
+		cout<<"您输入的参数有误！\n";
+		return 999;		// 输入参数有误，返回999
 	}
 
 	char *str_inputRasterFileNames = argv[1];
@@ -371,9 +449,21 @@ int main(int argc, char *argv[])
 	// ******************* 数据准备--完毕 ******************* //
 
 	// 主要的处理函数
-	DEMProcessing(inputRasterFileNames, outputRasterFileNames, tempRasterFileName, shpFileName);
+	int result = DEMProcessing(inputRasterFileNames, outputRasterFileNames, tempRasterFileName, shpFileName);
+	if(result != 0)
+	{
+		if(result == 444)
+		{
+			cout<<"文件读取错误！\n";
+		}
+		else
+		{
+			cout<<"您输入的第"<<result+1<<"个图层与之前的图层无重叠部分，请输入正确的图层数据。\n";	// 存在图层之间没有交集的情况，返回与之前图层没有交集的图层序号
+		}
+		return result;
+	}
 
 	cout<<"\n--------DONE!--------\n";
-	system("pause");
-	return 0;
+	//system("pause");
+	return 0;				// 运行正常没有错误，返回值为0
 }
