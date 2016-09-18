@@ -1,0 +1,15 @@
+mpic++ -o SoLIM *.cpp -I /soft/share/include/ -L /soft/share/lib -lgdal
+
+mpic++ *.cpp -o samplebase -lgdal
+
+mpirun -n 进程数 程序路径 参数
+
+mpirun -n 4 samplebase "/home/admin/work/sampleWebservice/data/geo.tif#/home/admin/work/sampleWebservice/data/evap.tif#/home/admin/work/sampleWebservice/data/slp.tif#/home/admin/work/sampleWebservice/data/rain.tif" "/home/admin/work/sampleWebservice/data/allpoints.csv" "Geology?Boolean#Climate?Gower#Terrain?Gower#Climate?Gower" 0.5 "/home/admin/work/sampleWebservice/result/property" "/home/admin/work/sampleWebservice/result/uncertainty"
+
+mpirun -n 4 samplebase "/home/admin/work/test/data2/geo.tif#/home/admin/work/test/data2/jiangshui.tif#//home/admin/work/test/data2/slope.tif#/home/admin/work/test/data2/dem.tif" "/home/admin/work/test/data2/training.csv" "Geology?Boolean#Climate?Gaussian#Terrain?Gaussian#Terrain?Gaussian" 0.5 "/home/admin/work/test/result/property" "/home/admin/work/test/result/uncertainty"
+
+=============================================================2016/01/14=============================================================
+mpirun -n 4 samplebase "/home/admin/work/test/lpdata/aspect.tif#/home/admin/work/test/lpdata/dem.tif#/home/admin/work/test/lpdata/demplanc.tif#/home/admin/work/test/lpdata/demprofc.tif#/home/admin/work/test/lpdata/twi.tif#/home/admin/work/test/lpdata/demSlp2_dg.tif#/home/admin/work/test/lpdata/temp_clip.tif#/home/admin/work/test/lpdata/t_prec.tif" "/home/admin/work/test/lpdata/xdepath.csv" "Terrain?Gaussian#Terrain?Gaussian#Terrain?Gaussian#Terrain?Gaussian#Terrain?Gaussian#Terrain?Gaussian#Climate?Gaussian#Climate?Gaussian" 0.5 "/home/admin/work/test/result/xdepathproperty1" "/home/admin/work/test/result/xdepathuncertainty1"
+------------------------------------------------------------------------------------------------------------------------------------------
+mpirun -n 4 samplebase "/home/admin/work/test/data/jiangshui.tif#/home/admin/work/test/data/geo.tif#/home/admin/work/test/data/dem.tif#/home/admin/work/test/data/slope.tif" "/home/admin/work/test/data/training.csv" "Climate?Gower#Geology?Boolean#Terrain?Gower#Terrain?Gower" 0.5 "/home/admin/work/test/result/propertyClay" "/home/admin/work/test/result/uncertaintyClay" "X" "Y" "Clay" "Limit" "Limit"
+
